@@ -2,11 +2,19 @@
 
 Runs the usual post-patch IDA setup without babysitting every dialog.
 
-This assumes IDA 9 is ready to go. The runner uses
-[FFXIVClientStructs](https://github.com/aers/FFXIVClientStructs), with
-[ExtraPass](https://github.com/kweatherman/IDA_ExtraPass_PlugIn) and
-[FFXIVIDAComments](https://github.com/Haselnussbomber/FFXIVIDAComments) as
-optional extras.
+## Requirements
+
+This automates an existing setup; it does not install any of these for you.
+
+- FFXIV, Git, and IDA 9 with working IDAPython. The runner itself uses Python
+  inside IDA. This has been tested on IDA 9.1.
+- A local [FFXIVClientStructs](https://github.com/aers/FFXIVClientStructs) clone.
+  Install `pyyaml` and `anytree` in the Python environment used by IDA; see its
+  [IDA README](https://github.com/aers/FFXIVClientStructs/blob/main/ida/README.md) for details.
+- The Hex-Rays decompiler if full C output is enabled.
+- [ExtraPass](https://github.com/kweatherman/IDA_ExtraPass_PlugIn) if the chosen preset enables it.
+- [FFXIVIDAComments](https://github.com/Haselnussbomber/FFXIVIDAComments) and
+  its requirements, including the .NET SDK, if comments are enabled.
 
 ## Setup
 
@@ -31,6 +39,20 @@ Relative paths are resolved from the selected config file. You can also set
 | `favorite.json` | ExtraPass, FFXIVClientStructs, full C output, and comments |
 | `no-comments.json` | ExtraPass and FFXIVClientStructs, including C output |
 | `client-structs-only.json` | FFXIVClientStructs only, with no ExtraPass, comments, or C output |
+
+## Rough timings
+
+These were clean runs from the executable on a Ryzen 7 7800X3D with IDA 9.1.
+They include the whole runner, not just the time spent inside IDA.
+
+| Preset | Time |
+| --- | ---: |
+| `favorite.json` | 1:03:18 |
+| `no-comments.json` | 53:11 |
+| `client-structs-only.json` | 11:38 |
+
+The full C output is where most of the time goes. Treat these as rough numbers;
+IDA version, game version, and hardware will all change them.
 
 The presets are just starting points. The main switches are:
 
