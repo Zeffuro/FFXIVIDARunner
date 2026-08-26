@@ -1,0 +1,55 @@
+{
+  "paths": {
+    "game_executable": "C:\\path\\to\\game\\ffxiv_dx11.exe",
+    "sqpack_directory": "",
+    "ida_executable": "C:\\path\\to\\ida.exe",
+    "client_structs_repository": "C:\\path\\to\\FFXIVClientStructs",
+    "comments_repository": "",
+    "database_output": "",
+    "c_output": "",
+    "backup_directory": "",
+    "run_log_directory": ""
+  },
+  "repositories": {
+    "update_client_structs": true,
+    "client_structs_remote": "origin",
+    "client_structs_branch": "main",
+    "update_comments": false,
+    "comments_remote": "origin",
+    "comments_branch": "main"
+  },
+  "stages": {
+    "extra_pass": false,
+    "client_structs": true,
+    "generate_c_file": false,
+    "export_comments": false,
+    "apply_comments": false
+  },
+  "ida": {
+    "visible": false
+  },
+  "client_structs": {
+    "sync_idauser_cfg": true,
+    "image_base_name": "ffxiv_dx11.exe",
+    "importer": "srclang",
+    "padding": "full",
+    "update_member_function_types": true,
+    "update_virtual_function_types": true
+  },
+  "extra_pass": {
+    "mode": "configured",
+    "max_runs": 5,
+    "convert_unknown_data": false,
+    "fix_align_blocks": true,
+    "fix_missing_code": true,
+    "fix_missing_functions": true,
+    "fix_noncontiguous_functions": true,
+    "play_sound": false
+  },
+  "backup": {
+    "enabled": true,
+    "include_database": true,
+    "include_c_file": false
+  },
+  "completion_sound": false
+}
