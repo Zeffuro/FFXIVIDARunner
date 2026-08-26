@@ -1,6 +1,6 @@
 {
   "paths": {
-    "game_executable": "C:\\path\\to\\game\\ffxiv_dx11.exe",
+    "game_executable": "C:\\Program Files (x86)\\Square Enix\\FINAL FANTASY XIV - A Realm Reborn\\game\\ffxiv_dx11.exe",
     "sqpack_directory": "",
     "ida_executable": "C:\\path\\to\\ida.exe",
     "client_structs_repository": "C:\\path\\to\\FFXIVClientStructs",

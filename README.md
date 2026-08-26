@@ -43,6 +43,7 @@ The presets are just starting points. The main switches are:
 - `completion_sound` plays one Windows sound after the whole run. It is off by default.
 - `backup` controls whether the previous database and C file are kept. Backups
   default to an `ida-history` folder beside the game executable and use the run date.
+- `paths.sqpack_directory` can stay blank; it then uses `sqpack` beside the executable.
 - `paths.database_output` and `paths.c_output` are separate. Leave either blank
   to put it beside the executable.
 
