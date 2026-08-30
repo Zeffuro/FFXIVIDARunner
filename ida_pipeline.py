@@ -6,6 +6,7 @@ import os
 import sys
 import time
 import traceback
+from datetime import datetime
 
 import ida_auto
 import ida_funcs
@@ -18,6 +19,64 @@ import idc
 
 
 PIPELINE_CONFIG_ENV = "_FFXIV_IDA_PIPELINE_CONFIG"
+_stage_timing = None
+
+
+def timestamp_now():
+    return datetime.now().astimezone().isoformat(timespec="milliseconds")
+
+
+def reset_stage_timing():
+    global _stage_timing
+    _stage_timing = {
+        "pipeline_started_at": timestamp_now(),
+        "pipeline_started_monotonic": time.monotonic(),
+        "current": None,
+        "completed": [],
+    }
+
+
+def update_stage_timing(stage, state):
+    global _stage_timing
+    if _stage_timing is None:
+        reset_stage_timing()
+
+    now = time.monotonic()
+    now_timestamp = timestamp_now()
+    current = _stage_timing["current"]
+    terminal = state in ("complete", "failed")
+
+    if current is not None and (current["stage"] != stage or terminal):
+        completed = {
+            "stage": current["stage"],
+            "state": "failed" if state == "failed" else "complete",
+            "started_at": current["started_at"],
+            "completed_at": now_timestamp,
+            "elapsed_seconds": round(now - current["started_monotonic"], 2),
+        }
+        _stage_timing["completed"].append(completed)
+        _stage_timing["current"] = None
+        current = None
+
+    if not terminal and current is None:
+        current = {
+            "stage": stage,
+            "started_at": now_timestamp,
+            "started_monotonic": now,
+        }
+        _stage_timing["current"] = current
+
+    timing = {
+        "pipeline_started_at": _stage_timing["pipeline_started_at"],
+        "pipeline_elapsed_seconds": round(
+            now - _stage_timing["pipeline_started_monotonic"], 2
+        ),
+        "stage_timings": [dict(item) for item in _stage_timing["completed"]],
+    }
+    if current is not None:
+        timing["stage_started_at"] = current["started_at"]
+        timing["stage_elapsed_seconds"] = round(now - current["started_monotonic"], 2)
+    return timing
 
 
 def load_config():
@@ -31,10 +90,12 @@ def load_config():
 
 
 def write_status(config, stage, state="running", **details):
+    timing = update_stage_timing(stage, state)
     status = {
         "state": state,
         "stage": stage,
-        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "updated_at": timestamp_now(),
+        **timing,
         **details,
     }
     status_path = config["status_path"]
@@ -252,6 +313,7 @@ def create_c_file(config):
 def main():
     started_at = time.time()
     config = None
+    reset_stage_timing()
     try:
         config = load_config()
         write_status(config, "auto_analysis")

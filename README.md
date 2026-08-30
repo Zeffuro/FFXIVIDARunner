@@ -54,6 +54,10 @@ They include the whole runner, not just the time spent inside IDA.
 The full C output is where most of the time goes. Treat these as rough numbers;
 IDA version, game version, and hardware will all change them.
 
+Each run's `pipeline-status.json` includes start, finish, and elapsed time for
+every stage. `run.json` also records `post_pipeline_exit_seconds`, which covers
+IDA cleanup after the pipeline says it is complete.
+
 The presets are just starting points. The main switches are:
 
 - `ida.visible` shows or hides IDA while it runs.

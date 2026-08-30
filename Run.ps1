@@ -243,6 +243,11 @@ $runMetadata = [ordered]@{
     backup_directory = $datedBackupDirectory
     client_structs_commit = $null
     comments_commit = $null
+    ida_started_at = $null
+    ida_exited_at = $null
+    ida_process_elapsed_seconds = $null
+    ida_exit_code = $null
+    post_pipeline_exit_seconds = $null
     completed_at = $null
     failed_at = $null
     error = $null
@@ -345,6 +350,10 @@ try {
     $oldPipelineConfig = [Environment]::GetEnvironmentVariable('_FFXIV_IDA_PIPELINE_CONFIG', 'Process')
     [Environment]::SetEnvironmentVariable('_FFXIV_IDA_PIPELINE_CONFIG', $pipelineConfigPath, 'Process')
     $pipelineStarted = $true
+    $idaProcess = $null
+    $idaStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $runMetadata.ida_started_at = (Get-Date).ToString('o')
+    Write-JsonFile $runMetadata $metadataPath
     try {
         $idaArguments = @(
             '-A',
@@ -357,6 +366,11 @@ try {
         $windowStyle = if ($idaVisible) { 'Normal' } else { 'Hidden' }
         $idaProcess = Start-Process -FilePath $idaExecutable -ArgumentList $idaArguments -WorkingDirectory $gameDirectory -WindowStyle $windowStyle -PassThru -Wait
     } finally {
+        $idaStopwatch.Stop()
+        $runMetadata.ida_exited_at = (Get-Date).ToString('o')
+        $runMetadata.ida_process_elapsed_seconds = [math]::Round($idaStopwatch.Elapsed.TotalSeconds, 2)
+        if ($null -ne $idaProcess) { $runMetadata.ida_exit_code = $idaProcess.ExitCode }
+        Write-JsonFile $runMetadata $metadataPath
         [Environment]::SetEnvironmentVariable('_FFXIV_IDA_PIPELINE_CONFIG', $oldPipelineConfig, 'Process')
     }
 
@@ -364,6 +378,12 @@ try {
     Assert-LeafPath $statusPath 'Pipeline status'
     $pipelineStatus = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
     if ($pipelineStatus.state -ne 'complete') { throw "IDA did not complete. See $idaLogPath" }
+    $pipelineCompletedAt = [DateTimeOffset]::Parse([string]$pipelineStatus.updated_at)
+    $idaExitedAt = [DateTimeOffset]::Parse([string]$runMetadata.ida_exited_at)
+    $runMetadata.post_pipeline_exit_seconds = [math]::Round(
+        [math]::Max(0, ($idaExitedAt - $pipelineCompletedAt).TotalSeconds),
+        2
+    )
     Assert-LeafPath $databasePath 'Rebuilt database'
     if ($generateCFile) { Assert-LeafPath $cOutputPath 'Generated C file' }
 
