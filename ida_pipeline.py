@@ -13,6 +13,7 @@ import ida_hexrays
 import ida_kernwin
 import ida_loader
 import ida_pro
+import idaapi
 import idc
 
 
@@ -64,8 +65,12 @@ def execute_python_script(script_path):
 
 
 def configure_extra_pass_dialog(options):
-    from PyQt5.QtCore import QTimer
-    from PyQt5.QtWidgets import QApplication, QCheckBox
+    if idaapi.IDA_SDK_VERSION >= 920:
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QApplication, QCheckBox
+    else:
+        from PyQt5.QtCore import QTimer
+        from PyQt5.QtWidgets import QApplication, QCheckBox
 
     state = {"applied": False, "cancelled": False, "error": None, "attempts": 0}
     values = [
