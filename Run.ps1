@@ -85,6 +85,8 @@ function Write-JsonFile {
     $Value | ConvertTo-Json -Depth 15 | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
+. (Join-Path $PSScriptRoot 'ClientStructs.ps1')
+
 $selectedConfig = $Config
 if ([string]::IsNullOrWhiteSpace($selectedConfig)) {
     $selectedConfig = [Environment]::GetEnvironmentVariable('FFXIV_IDA_RUNNER_CONFIG', 'Process')
@@ -139,6 +141,14 @@ $generateCFile = [bool](Get-Setting $stages 'generate_c_file' $true)
 $exportComments = [bool](Get-Setting $stages 'export_comments' $false)
 $applyComments = [bool](Get-Setting $stages 'apply_comments' $false)
 $idaVisible = [bool](Get-Setting $idaSettings 'visible' $false)
+$idaUserDirectory = [string](Get-Setting $idaSettings 'user_directory' '')
+if ([string]::IsNullOrWhiteSpace($idaUserDirectory)) {
+    $idaUserDirectory = [Environment]::GetEnvironmentVariable('IDAUSR', 'Process')
+}
+$idaUserDirectories = @()
+if ($idaUserDirectory) {
+    $idaUserDirectories = @($idaUserDirectory -split ';' | ForEach-Object { Resolve-ConfigPathValue $_ $configDirectory })
+}
 $completionSound = [bool](Get-Setting $settings 'completion_sound' $false)
 
 $imageBaseName = [string](Get-Setting $clientSettings 'image_base_name' 'ffxiv_dx11.exe')
@@ -147,6 +157,9 @@ $padding = ([string](Get-Setting $clientSettings 'padding' 'full')).ToLowerInvar
 $updateMemberTypes = [bool](Get-Setting $clientSettings 'update_member_function_types' $true)
 $updateVirtualTypes = [bool](Get-Setting $clientSettings 'update_virtual_function_types' $true)
 $syncIdaUserConfig = [bool](Get-Setting $clientSettings 'sync_idauser_cfg' $true)
+$generateStructs = [bool](Get-Setting $clientSettings 'generate_structs' $true)
+$msvcIncludeDirectory = Resolve-ConfigPathValue (Get-Setting $clientSettings 'msvc_include_directory' '') $configDirectory
+if ($msvcIncludeDirectory) { Assert-LeafPath (Join-Path $msvcIncludeDirectory 'vector') 'MSVC include directory' }
 
 $extraPassMode = ([string](Get-Setting $extraPassSettings 'mode' 'configured')).ToLowerInvariant()
 $extraPassMaxRuns = [int](Get-Setting $extraPassSettings 'max_runs' 5)
@@ -169,9 +182,12 @@ if ($extraPassMaxRuns -lt 1 -or $extraPassMaxRuns -gt 10) { throw 'extra_pass.ma
 if ($runExtraPass -and $extraPassMode -eq 'interactive' -and -not $idaVisible) { throw 'Interactive ExtraPass options require ida.visible to be true.' }
 if ($runExtraPass) {
     $extraPassCandidates = @(
-        (Join-Path (Split-Path -Parent $idaExecutable) 'plugins\IDA_ExtraPass_PlugIn.dll'),
-        (Join-Path $env:APPDATA 'Hex-Rays\IDA Pro\plugins\IDA_ExtraPass_PlugIn.dll')
+        (Join-Path (Split-Path -Parent $idaExecutable) 'plugins\IDA_ExtraPass_PlugIn.dll')
     )
+    $pluginUserDirectories = if ($idaUserDirectories.Count) { $idaUserDirectories } else { @(Join-Path $env:APPDATA 'Hex-Rays\IDA Pro') }
+    foreach ($userDirectory in $pluginUserDirectories) {
+        $extraPassCandidates += Join-Path $userDirectory 'plugins\IDA_ExtraPass_PlugIn.dll'
+    }
     if (-not ($extraPassCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1)) {
         throw 'ExtraPass is enabled, but IDA_ExtraPass_PlugIn.dll was not found in the IDA or user plugin folder.'
     }
@@ -189,6 +205,15 @@ if ($runningIda.Count -gt 0) {
 if ($updateClient) { Assert-CleanTrackedWorktree $clientRepository $clientBranch }
 if ($updateComments) { Assert-CleanTrackedWorktree $commentsRepository $commentsBranch }
 
+$clientLayout = $null
+if ($runClientStructs) {
+    $clientLayout = Resolve-ClientStructsLayout $clientRepository $importer $padding
+    if ($syncIdaUserConfig) { Assert-LeafPath $clientLayout.ConfigPath 'FFXIVClientStructs idauser.cfg' }
+    if ($PreflightOnly -or -not $updateClient) {
+        Test-ClientStructsPrerequisites $clientLayout $clientRepository $generateStructs $gameDirectory
+    }
+}
+
 Write-Host "Config:          $selectedConfig"
 Write-Host "Executable:      $gameExecutable"
 Write-Host "Database output: $databasePath"
@@ -196,6 +221,7 @@ if ($generateCFile) { Write-Host "C output:        $cOutputPath" }
 Write-Host "IDA visible:     $idaVisible"
 Write-Host "Stages:          ExtraPass=$runExtraPass ClientStructs=$runClientStructs C=$generateCFile Comments=$applyComments"
 Write-Host "Backups:         $backupEnabled"
+if ($clientLayout) { Write-Host "CS scripts:      $($clientLayout.Layout)" }
 
 if ($PreflightOnly) {
     Write-Host "`nPreflight completed successfully." -ForegroundColor Green
@@ -242,6 +268,7 @@ $runMetadata = [ordered]@{
     c_output_path = if ($generateCFile) { $cOutputPath } else { $null }
     backup_directory = $datedBackupDirectory
     client_structs_commit = $null
+    client_structs_layout = $null
     comments_commit = $null
     ida_started_at = $null
     ida_exited_at = $null
@@ -269,11 +296,23 @@ try {
     if ($clientRepository) { $runMetadata.client_structs_commit = Get-GitText $clientRepository @('rev-parse', 'HEAD') }
     if ($commentsRepository) { $runMetadata.comments_commit = Get-GitText $commentsRepository @('rev-parse', 'HEAD') }
 
+    $clientStructsScript = $null
+    if ($runClientStructs) {
+        $clientLayout = Resolve-ClientStructsLayout $clientRepository $importer $padding
+        Test-ClientStructsPrerequisites $clientLayout $clientRepository $generateStructs $gameDirectory
+        Write-Step "Preparing ClientStructs ($($clientLayout.Layout))"
+        Prepare-ClientStructs $clientLayout $clientRepository $generateStructs
+        $clientStructsScript = $clientLayout.ScriptPath
+        $runMetadata.client_structs_layout = $clientLayout.Layout
+    }
+    $commentsScript = if ($applyComments) { Join-Path $commentsRepository 'ffxiv_comments.py' } else { $null }
+    if ($applyComments) { Assert-LeafPath $commentsScript 'FFXIV comments script' }
+
     if ($runClientStructs -and $syncIdaUserConfig) {
         Write-Step 'Updating idauser.cfg'
-        $sourceConfig = Join-Path $clientRepository 'ida\idauser.cfg'
+        $sourceConfig = $clientLayout.ConfigPath
         Assert-LeafPath $sourceConfig 'FFXIVClientStructs idauser.cfg'
-        $userConfigDirectory = Join-Path $env:APPDATA 'Hex-Rays\IDA Pro'
+        $userConfigDirectory = if ($idaUserDirectories.Count) { $idaUserDirectories[0] } else { Join-Path $env:APPDATA 'Hex-Rays\IDA Pro' }
         $userConfig = Join-Path $userConfigDirectory 'idauser.cfg'
         New-Item -ItemType Directory -Path $userConfigDirectory -Force | Out-Null
         if ((Test-Path -LiteralPath $userConfig) -and ((Get-FileHash $sourceConfig).Hash -ne (Get-FileHash $userConfig).Hash)) {
@@ -307,15 +346,12 @@ try {
         }
     }
 
-    $clientStructsScript = if ($runClientStructs) { Join-Path $clientRepository 'ida\ffxiv_fullrun_ida.py' } else { $null }
-    $commentsScript = if ($applyComments) { Join-Path $commentsRepository 'ffxiv_comments.py' } else { $null }
-    if ($runClientStructs) { Assert-LeafPath $clientStructsScript 'FFXIVClientStructs full-run script' }
-    if ($applyComments) { Assert-LeafPath $commentsScript 'FFXIV comments script' }
-
     $pipelineConfig = [ordered]@{
         status_path = $statusPath
         c_output_path = $cOutputPath
         client_structs_script = $clientStructsScript
+        client_structs_layout = if ($runClientStructs) { $clientLayout.Layout } else { $null }
+        game_directory = $gameDirectory
         comments_script = $commentsScript
         stages = [ordered]@{
             extra_pass = $runExtraPass
@@ -329,6 +365,7 @@ try {
             padding = $padding
             update_member_function_types = $updateMemberTypes
             update_virtual_function_types = $updateVirtualTypes
+            msvc_include_directory = $msvcIncludeDirectory
         }
         extra_pass = [ordered]@{
             mode = $extraPassMode
@@ -348,13 +385,17 @@ try {
     Write-Step 'Starting IDA'
     Write-Host "Log: $idaLogPath"
     $oldPipelineConfig = [Environment]::GetEnvironmentVariable('_FFXIV_IDA_PIPELINE_CONFIG', 'Process')
-    [Environment]::SetEnvironmentVariable('_FFXIV_IDA_PIPELINE_CONFIG', $pipelineConfigPath, 'Process')
+    $oldIdaUser = [Environment]::GetEnvironmentVariable('IDAUSR', 'Process')
     $pipelineStarted = $true
     $idaProcess = $null
     $idaStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $runMetadata.ida_started_at = (Get-Date).ToString('o')
     Write-JsonFile $runMetadata $metadataPath
     try {
+        [Environment]::SetEnvironmentVariable('_FFXIV_IDA_PIPELINE_CONFIG', $pipelineConfigPath, 'Process')
+        if ($idaUserDirectory) {
+            [Environment]::SetEnvironmentVariable('IDAUSR', ($idaUserDirectories -join ';'), 'Process')
+        }
         $idaArguments = @(
             '-A',
             '-Opdb:off',
@@ -364,14 +405,15 @@ try {
             ('"{0}"' -f $gameExecutable)
         )
         $windowStyle = if ($idaVisible) { 'Normal' } else { 'Hidden' }
-        $idaProcess = Start-Process -FilePath $idaExecutable -ArgumentList $idaArguments -WorkingDirectory $gameDirectory -WindowStyle $windowStyle -PassThru -Wait
+        $idaProcess = Start-Process -FilePath $idaExecutable -ArgumentList $idaArguments -WorkingDirectory $runDirectory -WindowStyle $windowStyle -PassThru -Wait
     } finally {
+        [Environment]::SetEnvironmentVariable('_FFXIV_IDA_PIPELINE_CONFIG', $oldPipelineConfig, 'Process')
+        [Environment]::SetEnvironmentVariable('IDAUSR', $oldIdaUser, 'Process')
         $idaStopwatch.Stop()
         $runMetadata.ida_exited_at = (Get-Date).ToString('o')
         $runMetadata.ida_process_elapsed_seconds = [math]::Round($idaStopwatch.Elapsed.TotalSeconds, 2)
         if ($null -ne $idaProcess) { $runMetadata.ida_exit_code = $idaProcess.ExitCode }
         Write-JsonFile $runMetadata $metadataPath
-        [Environment]::SetEnvironmentVariable('_FFXIV_IDA_PIPELINE_CONFIG', $oldPipelineConfig, 'Process')
     }
 
     if ($idaProcess.ExitCode -ne 0) { throw "IDA exited with code $($idaProcess.ExitCode). See $idaLogPath" }

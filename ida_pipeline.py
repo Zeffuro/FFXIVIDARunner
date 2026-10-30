@@ -249,6 +249,12 @@ def run_extra_passes(config):
 
 
 def run_client_structs(config):
+    if config.get("client_structs_layout") == "reworked":
+        from client_structs_rework import run
+
+        run(config, execute_python_script)
+        ida_auto.auto_wait()
+        return
     options = config["client_structs"]
     original_ask_buttons = ida_kernwin.ask_buttons
     original_ask_yn = ida_kernwin.ask_yn
@@ -316,6 +322,10 @@ def main():
     reset_stage_timing()
     try:
         config = load_config()
+        if config.get("client_structs_layout") == "reworked":
+            from client_structs_rework import validate_environment
+
+            validate_environment(config)
         write_status(config, "auto_analysis")
         ida_auto.auto_wait()
 
@@ -338,6 +348,7 @@ def main():
             ida_auto.auto_wait()
 
         write_status(config, "save_database")
+        # IDA 9.1's public wrapper passes a negative default to a uint32 parameter.
         if not ida_loader._ida_loader.save_database():
             raise RuntimeError("IDA failed to save the database")
         ida_loader.flush_buffers()

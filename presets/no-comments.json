@@ -26,10 +26,13 @@
     "apply_comments": false
   },
   "ida": {
-    "visible": false
+    "visible": false,
+    "user_directory": ""
   },
   "client_structs": {
     "sync_idauser_cfg": true,
+    "generate_structs": true,
+    "msvc_include_directory": "",
     "image_base_name": "ffxiv_dx11.exe",
     "importer": "srclang",
     "padding": "full",
