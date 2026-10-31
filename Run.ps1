@@ -273,6 +273,8 @@ $runMetadata = [ordered]@{
     ida_started_at = $null
     ida_exited_at = $null
     ida_process_elapsed_seconds = $null
+    analysis_process_elapsed_seconds = $null
+    analysis_log_path = $null
     ida_exit_code = $null
     post_pipeline_exit_seconds = $null
     completed_at = $null
@@ -388,6 +390,7 @@ try {
     $oldIdaUser = [Environment]::GetEnvironmentVariable('IDAUSR', 'Process')
     $pipelineStarted = $true
     $idaProcess = $null
+    $pipelineStatus = $null
     $idaStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $runMetadata.ida_started_at = (Get-Date).ToString('o')
     Write-JsonFile $runMetadata $metadataPath
@@ -396,16 +399,43 @@ try {
         if ($idaUserDirectory) {
             [Environment]::SetEnvironmentVariable('IDAUSR', ($idaUserDirectories -join ';'), 'Process')
         }
-        $idaArguments = @(
-            '-A',
-            '-Opdb:off',
-            ('-L"{0}"' -f $idaLogPath),
-            ('-o"{0}"' -f $databasePath),
-            ('-S"{0}"' -f $pipelineScript),
-            ('"{0}"' -f $gameExecutable)
-        )
         $windowStyle = if ($idaVisible) { 'Normal' } else { 'Hidden' }
-        $idaProcess = Start-Process -FilePath $idaExecutable -ArgumentList $idaArguments -WorkingDirectory $runDirectory -WindowStyle $windowStyle -PassThru -Wait
+        $idaInputPath = $gameExecutable
+        for ($launch = 0; $launch -lt 2; $launch++) {
+            $idaArguments = @('-A', '-Opdb:off', ('-L"{0}"' -f $idaLogPath))
+            if ($launch -eq 0) { $idaArguments += '-o"{0}"' -f $databasePath }
+            $idaArguments += @(
+                ('-S"{0}"' -f $pipelineScript),
+                ('"{0}"' -f $idaInputPath)
+            )
+            $idaProcess = $null
+            $idaProcess = Start-Process -FilePath $idaExecutable -ArgumentList $idaArguments -WorkingDirectory $runDirectory -WindowStyle $windowStyle -PassThru -Wait
+            if ($idaProcess.ExitCode -ne 0) { throw "IDA exited with code $($idaProcess.ExitCode). See $idaLogPath" }
+            Assert-LeafPath $statusPath 'Pipeline status'
+            $pipelineStatus = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
+            $restartRequired = Get-Setting $pipelineStatus 'restart_required' $false
+            if ($restartRequired -isnot [bool]) { throw 'Pipeline restart_required must be a JSON boolean.' }
+            if (-not $restartRequired) { break }
+            if ($launch -ne 0) { throw 'IDA requested more than one analysis restart.' }
+            if ((Get-Setting $pipelineStatus 'state' '') -cne 'complete' -or
+                (Get-Setting $pipelineStatus 'stage' '') -cne 'analysis_complete') {
+                throw 'IDA returned an incomplete analysis checkpoint.'
+            }
+            $checkpointDatabase = [string](Get-Setting $pipelineStatus 'database_path' '')
+            if (-not [System.IO.Path]::IsPathRooted($checkpointDatabase) -or
+                -not [string]::Equals([System.IO.Path]::GetFullPath($checkpointDatabase), $databasePath, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'The analysis checkpoint database does not match the configured output.'
+            }
+            Assert-LeafPath $databasePath 'Analyzed database'
+            Assert-LeafPath $idaLogPath 'Analysis log'
+            $runMetadata.analysis_process_elapsed_seconds = [math]::Round($idaStopwatch.Elapsed.TotalSeconds, 2)
+            $runMetadata.analysis_log_path = Join-Path $runDirectory 'analysis.log'
+            Move-Item -LiteralPath $idaLogPath -Destination $runMetadata.analysis_log_path
+            $pipelineConfig['analysis_checkpoint'] = $pipelineStatus
+            Write-JsonFile $pipelineConfig $pipelineConfigPath
+            $idaInputPath = $databasePath
+            Write-Step 'Reopening analyzed database'
+        }
     } finally {
         [Environment]::SetEnvironmentVariable('_FFXIV_IDA_PIPELINE_CONFIG', $oldPipelineConfig, 'Process')
         [Environment]::SetEnvironmentVariable('IDAUSR', $oldIdaUser, 'Process')
@@ -416,10 +446,9 @@ try {
         Write-JsonFile $runMetadata $metadataPath
     }
 
-    if ($idaProcess.ExitCode -ne 0) { throw "IDA exited with code $($idaProcess.ExitCode). See $idaLogPath" }
-    Assert-LeafPath $statusPath 'Pipeline status'
-    $pipelineStatus = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
-    if ($pipelineStatus.state -ne 'complete') { throw "IDA did not complete. See $idaLogPath" }
+    if ($pipelineStatus.state -ne 'complete' -or $pipelineStatus.stage -ne 'complete') {
+        throw "IDA did not complete. See $idaLogPath"
+    }
     $pipelineCompletedAt = [DateTimeOffset]::Parse([string]$pipelineStatus.updated_at)
     $idaExitedAt = [DateTimeOffset]::Parse([string]$runMetadata.ida_exited_at)
     $runMetadata.post_pipeline_exit_seconds = [math]::Round(

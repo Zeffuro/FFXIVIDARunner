@@ -26,7 +26,7 @@ def timestamp_now():
     return datetime.now().astimezone().isoformat(timespec="milliseconds")
 
 
-def reset_stage_timing():
+def reset_stage_timing(checkpoint=None):
     global _stage_timing
     _stage_timing = {
         "pipeline_started_at": timestamp_now(),
@@ -34,6 +34,18 @@ def reset_stage_timing():
         "current": None,
         "completed": [],
     }
+    if checkpoint is not None:
+        now = datetime.now().astimezone()
+        pipeline_started = datetime.fromisoformat(checkpoint["pipeline_started_at"])
+        reopened_at = datetime.fromisoformat(checkpoint["updated_at"])
+        _stage_timing["pipeline_started_at"] = checkpoint["pipeline_started_at"]
+        _stage_timing["pipeline_started_monotonic"] -= (now - pipeline_started).total_seconds()
+        _stage_timing["completed"] = [dict(item) for item in checkpoint["stage_timings"]]
+        _stage_timing["current"] = {
+            "stage": "reopen_database",
+            "started_at": checkpoint["updated_at"],
+            "started_monotonic": time.monotonic() - (now - reopened_at).total_seconds(),
+        }
 
 
 def update_stage_timing(stage, state):
@@ -181,6 +193,7 @@ def run_extra_passes(config):
     while completed_runs < max_runs and attempts < max_runs + 3:
         attempts += 1
         ida_auto.auto_wait()
+        previous_count = ida_funcs.get_func_qty()
         write_status(
             config,
             "extra_pass",
@@ -188,6 +201,7 @@ def run_extra_passes(config):
             attempt=attempts,
             max_runs=max_runs,
             function_count=previous_count,
+            phase="plugin",
         )
 
         previous_batch_mode = idc.batch(0)
@@ -202,7 +216,7 @@ def run_extra_passes(config):
             idc.batch(previous_batch_mode)
         plugin_elapsed = time.monotonic() - plugin_started_at
 
-        if plugin_elapsed < 0.25:
+        if plugin_elapsed < 0.25 and (dialog_state is None or not dialog_state["applied"]):
             if dialog_state is not None:
                 dialog_state["cancelled"] = True
             print(
@@ -219,6 +233,14 @@ def run_extra_passes(config):
             if not dialog_state["applied"]:
                 raise RuntimeError("ExtraPass options were not applied")
 
+        write_status(
+            config,
+            "extra_pass",
+            pass_number=completed_runs + 1,
+            attempt=attempts,
+            phase="post_analysis",
+            plugin_elapsed_seconds=round(plugin_elapsed, 3),
+        )
         ida_auto.auto_wait()
         completed_runs += 1
         current_count = ida_funcs.get_func_qty()
@@ -293,7 +315,10 @@ def run_client_structs(config):
     ida_kernwin.ask_buttons = answer_buttons
     ida_kernwin.ask_yn = answer_yes_no
     try:
-        execute_python_script(config["client_structs_script"])
+        from legacy_srclang import declarations
+
+        with declarations(config["client_structs_script"], options):
+            execute_python_script(config["client_structs_script"])
     finally:
         ida_kernwin.ask_buttons = original_ask_buttons
         ida_kernwin.ask_yn = original_ask_yn
@@ -316,18 +341,52 @@ def create_c_file(config):
     return output_path
 
 
+def save_database(config, stage="save_database"):
+    write_status(config, stage)
+    if not ida_loader._ida_loader.save_database():
+        raise RuntimeError("IDA failed to save the database")
+    ida_loader.flush_buffers()
+
+
 def main():
     started_at = time.time()
     config = None
     reset_stage_timing()
     try:
         config = load_config()
+        checkpoint = config.get("analysis_checkpoint")
+        if checkpoint is not None:
+            current_database = ida_loader.get_path(ida_loader.PATH_TYPE_IDB)
+            expected_database = checkpoint["database_path"]
+            if os.path.normcase(os.path.abspath(current_database)) != os.path.normcase(
+                os.path.abspath(expected_database)
+            ):
+                raise RuntimeError("Analysis checkpoint belongs to a different database")
+            reset_stage_timing(checkpoint)
+            started_at = datetime.fromisoformat(checkpoint["pipeline_started_at"]).timestamp()
         if config.get("client_structs_layout") == "reworked":
             from client_structs_rework import validate_environment
 
             validate_environment(config)
-        write_status(config, "auto_analysis")
+        write_status(config, "reopen_database" if checkpoint is not None else "auto_analysis")
         ida_auto.auto_wait()
+
+        if (
+            checkpoint is None
+            and idaapi.IDA_SDK_VERSION >= 950
+            and config["stages"]["extra_pass"]
+        ):
+            save_database(config, "save_analysis")
+            write_status(
+                config,
+                "analysis_complete",
+                state="complete",
+                restart_required=True,
+                database_path=ida_loader.get_path(ida_loader.PATH_TYPE_IDB),
+                function_count=ida_funcs.get_func_qty(),
+            )
+            ida_pro.qexit(0)
+            return
 
         extra_pass_results = []
         if config["stages"]["extra_pass"]:
@@ -347,11 +406,7 @@ def main():
             execute_python_script(config["comments_script"])
             ida_auto.auto_wait()
 
-        write_status(config, "save_database")
-        # IDA 9.1's public wrapper passes a negative default to a uint32 parameter.
-        if not ida_loader._ida_loader.save_database():
-            raise RuntimeError("IDA failed to save the database")
-        ida_loader.flush_buffers()
+        save_database(config)
 
         write_status(
             config,

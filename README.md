@@ -57,6 +57,9 @@ They include the whole runner, not just the time spent inside IDA.
 The full C output is where most of the time goes. Treat these as rough numbers;
 IDA version, game version, and hardware will all change them.
 
+IDA 9.5+ reopens the database before ExtraPass to avoid slow FLIRT analysis.
+The first log is `analysis.log`.
+
 Each run's `pipeline-status.json` includes start, finish, and elapsed time for
 every stage. `run.json` also records `post_pipeline_exit_seconds`, which covers
 IDA cleanup after the pipeline says it is complete.
